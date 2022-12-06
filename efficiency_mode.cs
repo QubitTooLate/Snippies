@@ -36,9 +36,70 @@ SetProcessAffinityMask(processHandle, 1);
 //Don't forget to clean up after yourself!
 CloseHandle(processHandle);
 
+return;
+
+// https://devblogs.microsoft.com/performance-diagnostics/introducing-ecoqos/
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessid
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_power_throttling_state
 // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask
 // https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+[return: MarshalAs(UnmanagedType.Bool)]
+static extern bool SetPriorityClass(
+  IntPtr hProcess,
+  uint dwPriorityClass
+);
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+static extern uint GetPriorityClass(
+  IntPtr hProcess
+);
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+static extern IntPtr OpenProcess(
+  uint dwDesiredAccess,
+  byte bInheritHandle,
+  int dwProcessId
+);
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+[return: MarshalAs(UnmanagedType.Bool)]
+static extern bool CloseHandle(
+	IntPtr hObject
+);
+
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+[return: MarshalAs(UnmanagedType.Bool)]
+static extern unsafe bool SetProcessInformation(
+	IntPtr hProcess,
+  	uint ProcessInformationClass,
+	void* ProcessInformation,
+	int ProcessInformationSize
+);
+
+[DllImport("kernel32", SetLastError = true)]
+[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+[return: MarshalAs(UnmanagedType.Bool)]
+static extern unsafe bool GetProcessInformation(
+	IntPtr hProcess,
+	uint ProcessInformationClass,
+	void* ProcessInformation,
+	int ProcessInformationSize
+);
+
+[StructLayout(LayoutKind.Sequential)]
+struct PROCESS_POWER_THROTTLING_STATE
+{
+	public uint Version;
+	public uint ControlMask;
+	public uint StateMask;
+}
