@@ -46,10 +46,10 @@ public unsafe sealed class DesktopDuplicator : IDisposable
     private readonly void*** _d3d11DeviceContext;
     private readonly void*** _dxgiOutputDuplication;
     private readonly void*** _d3d11Texture2DFrameBuffer;
-    private readonly void* _frameBuffer;
 
     private readonly int _width;
     private readonly int _height;
+    private readonly int _stride;
 
     public DesktopDuplicator(int adapter, int output)
     {
@@ -62,7 +62,6 @@ public unsafe sealed class DesktopDuplicator : IDisposable
         var dxgiOutputDuplication = default(void***);
         var d3d11Texture2DFirstFrame = default(void***);
         var d3d11Texture2DFrameBuffer = default(void***);
-        var frameBuffer = default(void*);
 
         try
         {
@@ -106,32 +105,34 @@ public unsafe sealed class DesktopDuplicator : IDisposable
             var frameInfo = default(FrameInfo);
             AcquireNextFrame(dxgiOutputDuplication, &frameInfo, &d3d11Texture2DFirstFrame);
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11texture2d-getdesc
-            var description = default(Texture2DDescription);
-            ((delegate* unmanaged[Stdcall]<void***, Texture2DDescription*, void>)d3d11Texture2DFirstFrame[0][10])(d3d11Texture2DFirstFrame, &description);
+            var width = 0;
+            var height = 0;
+            CreateFrameBuffer(d3d11Device, d3d11Texture2DFirstFrame, &width, &height, &d3d11Texture2DFrameBuffer);
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-releaseframe
-            ((delegate* unmanaged[Stdcall]<void***, int>)dxgiOutputDuplication[0][14])(dxgiOutputDuplication).Assert();
+            _width = width;
+            _height = height;
 
-            _width = (int)description.Width;
-            _height = (int)description.Height;
+            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-map
+            var mapped = default(MappedSubresource);
+            ((delegate* unmanaged[Stdcall]<void***, void***, uint, int, uint, MappedSubresource*, int>)d3d11DeviceContext[0][14])(
+                d3d11DeviceContext,
+                d3d11Texture2DFrameBuffer,
+                0,
+                D3D11_MAP_READ,
+                0,
+                &mapped
+            ).Assert();
 
-            description.BindFlags = 0;
-            description.CPUAccessFlags = D3D11_CPU_ACCESS_FLAG_READ;
-            description.Usage = D3D11_USAGE_STAGING;
-            description.MiscFlags = 0;
+            _stride = mapped.RowPitch;
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11device-createtexture2d
-            ((delegate* unmanaged[Stdcall]<void***, Texture2DDescription*, SubresourceData*, void****, int>)d3d11Device[0][5])(d3d11Device, &description, null, &d3d11Texture2DFrameBuffer).Assert();
-
-            frameBuffer = NativeMemory.Alloc(description.Width * 4 * description.Height);
+            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-unmap
+            ((delegate* unmanaged[Stdcall]<void***, void***, uint, void>)d3d11DeviceContext[0][15])(d3d11DeviceContext, d3d11Texture2DFrameBuffer, 0);
         }
         catch
         {
             Release(d3d11DeviceContext); 
             Release(dxgiOutputDuplication);
             Release(d3d11Texture2DFrameBuffer);
-            NativeMemory.Free(frameBuffer);
             throw;
         }
         finally
@@ -147,49 +148,34 @@ public unsafe sealed class DesktopDuplicator : IDisposable
         _d3d11DeviceContext = d3d11DeviceContext;
         _dxgiOutputDuplication = dxgiOutputDuplication; 
         _d3d11Texture2DFrameBuffer = d3d11Texture2DFrameBuffer;
-        _frameBuffer = frameBuffer;
     }
 
     public int Width => _width;
     public int Height => _height;
-    public int RequiredBufferSizeInBytes => _width * 4 * _height;
-    public int Stride => _width * 4;
+    public int RequiredBufferSizeInBytes => _stride * _height;
+    public int Stride => _stride;
 
-    public void WriteFrameIntoBuffer(Span<byte> buffer, out FrameInfo frame_info) 
+    public void WriteFrameIntoBuffer(Span<byte> buffer, out FrameInfo frame_info, uint max_wait_milliseconds = 1000)
     {
-        var d3d11Texture2DFrame = default(void***);
         var frameInfo = default(FrameInfo);
 
-        try
-        {
-            AcquireNextFrame(_dxgiOutputDuplication, &frameInfo, &d3d11Texture2DFrame);
+        AcquireNextFrameInFrameBuffer(_dxgiOutputDuplication, &frameInfo, _d3d11DeviceContext, _d3d11Texture2DFrameBuffer, max_wait_milliseconds);
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-copyresource
-            ((delegate* unmanaged[Stdcall]<void***, void***, void***, void>)_d3d11DeviceContext[0][47])(_d3d11DeviceContext, _d3d11Texture2DFrameBuffer, d3d11Texture2DFrame);
+        // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-map
+        var mapped = default(MappedSubresource);
+        ((delegate* unmanaged[Stdcall]<void***, void***, uint, int, uint, MappedSubresource*, int>)_d3d11DeviceContext[0][14])(
+            _d3d11DeviceContext,
+            _d3d11Texture2DFrameBuffer,
+            0,
+            D3D11_MAP_READ,
+            0,
+            &mapped
+        ).Assert();
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-releaseframe
-            ((delegate* unmanaged[Stdcall]<void***, int>)_dxgiOutputDuplication[0][14])(_dxgiOutputDuplication).Assert();
+        new Span<byte>(mapped.Data, mapped.RowPitch * _height).CopyTo(buffer);
 
-            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-map
-            var mapped = default(MappedSubresource);
-            ((delegate* unmanaged[Stdcall]<void***, void***, uint, int, uint, MappedSubresource*, int>)_d3d11DeviceContext[0][14])(
-                _d3d11DeviceContext,
-                _d3d11Texture2DFrameBuffer,
-                0,
-                D3D11_MAP_READ,
-                0,
-                &mapped
-            ).Assert();
-
-            new Span<byte>(mapped.Data, (int)(mapped.RowPitch * _height)).CopyTo(buffer);
-
-            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-unmap
-            ((delegate* unmanaged[Stdcall]<void***, void***, uint, void>)_d3d11DeviceContext[0][15])(_d3d11DeviceContext, _d3d11Texture2DFrameBuffer, 0);
-        }
-        finally
-        {
-            Release(d3d11Texture2DFrame);
-        }
+        // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-unmap
+        ((delegate* unmanaged[Stdcall]<void***, void***, uint, void>)_d3d11DeviceContext[0][15])(_d3d11DeviceContext, _d3d11Texture2DFrameBuffer, 0);
 
         frame_info = frameInfo;
     }
@@ -199,7 +185,6 @@ public unsafe sealed class DesktopDuplicator : IDisposable
         Release(_d3d11DeviceContext);
         Release(_dxgiOutputDuplication);
         Release(_d3d11Texture2DFrameBuffer);
-        NativeMemory.Free(_frameBuffer);
     }
 
     private static void Release(void*** unknown)
@@ -236,6 +221,64 @@ public unsafe sealed class DesktopDuplicator : IDisposable
         *out_d3d11_texture_2D = d3d11Texture2D;
     }
 
+    private static void CreateFrameBuffer(void*** d3d11_device, void*** d3d11_texture_2D, int* out_width, int* out_height, void**** out_d3d11_texture_2D)
+    {
+        var d3d11Texture2DFrameBuffer = default(void***);
+        var width = 0;
+        var height = 0;
+
+        try
+        {
+            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11texture2d-getdesc
+            var description = default(Texture2DDescription);
+            ((delegate* unmanaged[Stdcall]<void***, Texture2DDescription*, void>)d3d11_texture_2D[0][10])(d3d11_texture_2D, &description);
+
+            width = description.Width;
+            height = description.Height;
+
+            description.BindFlags = 0;
+            description.CPUAccessFlags = D3D11_CPU_ACCESS_FLAG_READ;
+            description.Usage = D3D11_USAGE_STAGING;
+            description.MiscFlags = 0;
+
+            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11device-createtexture2d
+            ((delegate* unmanaged[Stdcall]<void***, Texture2DDescription*, SubresourceData*, void****, int>)d3d11_device[0][5])(d3d11_device, &description, null, &d3d11Texture2DFrameBuffer).Assert();
+        }
+        catch 
+        {
+            Release(d3d11Texture2DFrameBuffer);
+            *out_d3d11_texture_2D = null;
+            throw;
+        }
+
+        *out_width = width;
+        *out_height = height;
+        *out_d3d11_texture_2D = d3d11Texture2DFrameBuffer;
+    }
+
+    private static void AcquireNextFrameInFrameBuffer(void*** dxgi_output_duplication, FrameInfo* out_frame_info, void*** d3d11_device_context, void*** d3d11_texture_2D, uint max_wait_milliseconds = 1000)
+    {
+        var d3d11Texture2DFrame = default(void***);
+        var frameInfo = default(FrameInfo);
+
+        try
+        {
+            // https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutputduplication-releaseframe
+            ((delegate* unmanaged[Stdcall]<void***, int>)dxgi_output_duplication[0][14])(dxgi_output_duplication).Assert();
+
+            AcquireNextFrame(dxgi_output_duplication, out_frame_info, &d3d11Texture2DFrame, max_wait_milliseconds);
+
+            // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-copyresource
+            ((delegate* unmanaged[Stdcall]<void***, void***, void***, void>)d3d11_device_context[0][47])(d3d11_device_context, d3d11_texture_2D, d3d11Texture2DFrame);
+        }
+        finally
+        {
+            Release(d3d11Texture2DFrame);
+        }
+
+        *out_frame_info = frameInfo;
+    }
+
     [DllImport("dxgi", ExactSpelling = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern int CreateDXGIFactory1(Guid* riid, void**** ppFactory);
@@ -266,8 +309,8 @@ public unsafe sealed class DesktopDuplicator : IDisposable
 
     private struct Texture2DDescription
     {
-        public uint Width;
-        public uint Height;
+        public int Width;
+        public int Height;
         public uint MipLevels;
         public uint ArraySize;
         public int Format;
@@ -291,7 +334,7 @@ public unsafe sealed class DesktopDuplicator : IDisposable
     private struct MappedSubresource
     {
         public void* Data;
-        public uint RowPitch;
+        public int RowPitch;
         public uint DepthPitch;
     }
 }
