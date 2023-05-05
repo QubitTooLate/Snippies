@@ -1,4 +1,6 @@
 
+*Note: this example is a combination of C / C# how your code will actually look can be different depending on how you P/invoke it. This code is not complete and error handling may be improved.*
+
 ## Registering the window class.
 
 ```cs
@@ -137,7 +139,7 @@ private static unsafe nint UnmanagedProcedure(IntPtr window_handle, uint message
     if (userData != null)
     {
         var unmanagedReference = GCHandle.FromIntPtr((IntPtr)userData);
-        var win32Window = unmanagedReference.Target as Win32Window;
+        var win32Window = (Win32Window)unmanagedReference.Target;
         return win32Window.Procedure(window_handle, message, w, l);
     }
 
